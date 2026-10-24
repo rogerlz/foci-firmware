@@ -30,6 +30,14 @@ const ENCODER_ALIGNMENT_STABLE_PAIRS: u8 = 10;
 
 const ENCODER_ALIGNMENT_STILL_TIMEOUT_US: u64 = 2_000_000;
 
+/// Three-phase motors have no detent to pull the rotor onto the excitation
+/// axis, so friction and cogging leave it short of zero by tens of
+/// electrical degrees. Align twice, approaching zero from a quarter turn on
+/// each side, and zero the midpoint of the two rest positions.
+const ENCODER_ALIGNMENT_APPROACH_PHI_E: u32 = 16_384;
+
+const ENCODER_ALIGNMENT_APPROACH_US: u64 = 300_000;
+
 const ENCODER_ALIGNMENT_VOLTAGE_LIMIT: u32 = 2000;
 
 const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
@@ -596,6 +604,32 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
     }
 }
 
+fn two_sided_alignment<B: CommissioningBackend>(backend: &B) -> bool {
+    foci_tmc4671::registers::MotorTypeNPolePairs::from(backend.tmc_config().motor_type_n_pole_pairs)
+        .motor_type()
+        == Ok(foci_tmc4671::registers::MotorType::ThreePhase)
+}
+
+/// `ABN_DECODER_COUNT` at `rest` that maps the midpoint of `first` and `rest`
+/// to 0, or `None` when the two rest positions are more than a quarter
+/// electrical revolution apart (or ambiguous), which friction cannot
+/// explain.
+fn two_sided_commit_count(
+    domain: EncoderDomain,
+    first: EncoderCount,
+    rest: EncoderCount,
+    pole_pairs: u16,
+) -> Option<u32> {
+    let delta = domain.delta(first, rest).ok()?;
+    let quarter_electrical_rev = domain.counts_per_rev() / u32::from(pole_pairs.max(1)) / 4;
+    if delta.absolute_counts() > quarter_electrical_rev {
+        return None;
+    }
+    let from_midpoint = delta.signed_counts() - delta.signed_counts() / 2;
+    let counts_per_rev = i64::from(domain.counts_per_rev());
+    Some(i64::from(from_midpoint).rem_euclid(counts_per_rev) as u32)
+}
+
 pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -621,7 +655,13 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::NoCurrent);
             }
 
-            if let Err(error) = start_encoder_current_drive(backend, 0, 0).await {
+            let two_sided = two_sided_alignment(backend);
+            let start_phi_e = if two_sided {
+                ENCODER_ALIGNMENT_APPROACH_PHI_E
+            } else {
+                0
+            };
+            if let Err(error) = start_encoder_current_drive(backend, start_phi_e, 0).await {
                 return super::fail_inner(phase, error);
             }
 
@@ -644,6 +684,19 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.motor_pole_pairs(),
             );
+            if two_sided {
+                let Some(deadline) = backend
+                    .elapsed_us()
+                    .checked_add(ENCODER_ALIGNMENT_APPROACH_US)
+                else {
+                    return super::fail_inner(phase, CommissionError::InvalidSchedule);
+                };
+                *state = EncoderAlignState::Approach {
+                    deadline_us: deadline,
+                    first_rest: None,
+                };
+                return StepResult::At(deadline);
+            }
             let deadline = match backend
                 .elapsed_us()
                 .checked_add(ENCODER_ALIGNMENT_SETTLE_US)
@@ -655,6 +708,51 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 count_before: *count_before,
                 deadline_us: deadline,
                 min_movement,
+                first_rest: None,
+            };
+            StepResult::At(deadline)
+        }
+
+        EncoderAlignState::Approach {
+            deadline_us,
+            first_rest,
+        } => {
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+            // Measure this pass's movement from the approach position, so
+            // each pass proves the encoder follows the rotor.
+            let approach_count = match read_mechanical_encoder_position_counts_stable(
+                backend,
+                Some(diagnostics),
+                CommissionPhase::EncoderAlign,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = stop_encoder_current_drive(backend).await;
+                    return super::fail_inner(phase, error);
+                }
+            };
+            if backend.write_register(PHI_E_EXT, 0).await.is_err() {
+                let _ = stop_encoder_current_drive(backend).await;
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
+            let Some(deadline) = backend
+                .elapsed_us()
+                .checked_add(ENCODER_ALIGNMENT_SETTLE_US)
+            else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
+            *state = EncoderAlignState::Settle {
+                count_before: approach_count,
+                deadline_us: deadline,
+                min_movement: encoder_alignment_min_movement(
+                    backend.mechanical_encoder_quadrature_counts_per_rev(),
+                    backend.motor_pole_pairs(),
+                ),
+                first_rest: *first_rest,
             };
             StepResult::At(deadline)
         }
@@ -663,6 +761,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             count_before,
             deadline_us,
             min_movement,
+            first_rest,
         } => {
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
@@ -670,6 +769,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             *state = EncoderAlignState::StabilityCheck1 {
                 count_before: *count_before,
                 min_movement: *min_movement,
+                first_rest: *first_rest,
             };
             StepResult::ReadyNow
         }
@@ -677,6 +777,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
         EncoderAlignState::StabilityCheck1 {
             count_before,
             min_movement,
+            first_rest,
         } => {
             let count1 = match read_mechanical_encoder_position_counts_stable(
                 backend,
@@ -705,6 +806,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 min_movement: *min_movement,
                 stable_pairs: 0,
                 give_up_us: give_up,
+                first_rest: *first_rest,
             };
             StepResult::At(deadline)
         }
@@ -716,6 +818,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             min_movement,
             stable_pairs,
             give_up_us,
+            first_rest,
         } => {
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
@@ -788,12 +891,51 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
 
+            if first_rest.is_none() && two_sided_alignment(backend) {
+                let Some(deadline) = now.checked_add(ENCODER_ALIGNMENT_APPROACH_US) else {
+                    return super::fail_inner(phase, CommissionError::InvalidSchedule);
+                };
+                if backend
+                    .write_register(PHI_E_EXT, 65_536 - ENCODER_ALIGNMENT_APPROACH_PHI_E)
+                    .await
+                    .is_err()
+                {
+                    let _ = stop_encoder_current_drive(backend).await;
+                    return super::fail_inner(phase, CommissionError::Spi);
+                }
+                *state = EncoderAlignState::Approach {
+                    deadline_us: deadline,
+                    first_rest: Some(*count1),
+                };
+                return StepResult::At(deadline);
+            }
+            let commit_count = match first_rest {
+                None => 0,
+                Some(first) => match two_sided_commit_count(
+                    domain,
+                    *first,
+                    *count1,
+                    backend.motor_pole_pairs(),
+                ) {
+                    Some(commit_count) => commit_count,
+                    None => {
+                        defmt::warn!(
+                            "encoder-align FAIL: rest positions {} and {} too far apart",
+                            first.raw_counts(),
+                            count1.raw_counts()
+                        );
+                        let _ = stop_encoder_current_drive(backend).await;
+                        return super::fail_inner(phase, CommissionError::EncoderFault);
+                    }
+                },
+            };
             let counts_per_elec = counts_per_electrical_rev(
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
                 backend.motor_pole_pairs(),
             );
             *state = EncoderAlignState::Commit {
                 old_count: *count1,
+                commit_count,
                 electrical_residual_counts: folded_electrical_residual_counts(
                     count1.raw_counts(),
                     counts_per_elec,
@@ -808,13 +950,17 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
         EncoderAlignState::Commit {
             old_count,
+            commit_count,
             electrical_residual_counts,
             stability_counts,
             movement_counts,
             min_movement_counts,
             counts_per_electrical_rev,
         } => {
-            if backend.write_register(ABN_DECODER_COUNT, 0).await.is_err()
+            if backend
+                .write_register(ABN_DECODER_COUNT, *commit_count)
+                .await
+                .is_err()
                 || backend
                     .write_register(ABN_DECODER_PHI_E_PHI_M_OFFSET, 0)
                     .await
@@ -1021,6 +1167,7 @@ mod tests {
                     count_before: encoder_count(100),
                     deadline_us: 5_000,
                     min_movement: 2,
+                    first_rest: None,
                 },
             };
             let mut adc_cal = None;
@@ -1083,6 +1230,19 @@ mod tests {
     fn encoder_stability_counts_keep_two_counts_on_a_1000_line_encoder() {
         assert_eq!(encoder_stability_counts(4_000), 2);
         assert_eq!(encoder_stability_counts(400), 2);
+    }
+
+    #[test]
+    fn two_sided_commit_zeroes_the_midpoint_of_both_rest_positions() {
+        let domain = EncoderDomain::new(4_000).unwrap();
+        let commit = |first, rest| {
+            two_sided_commit_count(domain, domain.count(first), domain.count(rest), 3)
+        };
+        assert_eq!(commit(100, 140), Some(20));
+        assert_eq!(commit(140, 100), Some(4_000 - 20));
+        assert_eq!(commit(3_990, 10), Some(10));
+        // More than a quarter electrical revolution (333 counts) apart.
+        assert_eq!(commit(0, 400), None);
     }
 
     #[test]
@@ -1917,6 +2077,7 @@ mod tests {
                     // The final pair: stable commits, unstable fails.
                     stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
                     give_up_us: 0,
+                    first_rest: None,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {
@@ -1956,6 +2117,7 @@ mod tests {
                 state:
                     EncoderAlignState::Commit {
                         old_count,
+                        commit_count: 0,
                         electrical_residual_counts: 1,
                         stability_counts: 1,
                         movement_counts: 2,
@@ -2022,6 +2184,7 @@ mod tests {
                     InnerPhase::EncoderAlign {
                         state: EncoderAlignState::Commit {
                             old_count: encoder_count(10),
+                            commit_count: 0,
                             electrical_residual_counts: 1,
                             stability_counts: 1,
                             movement_counts: 4,
@@ -2075,6 +2238,7 @@ mod tests {
                     // The final pair: stable commits, unstable fails.
                     stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
                     give_up_us: 0,
+                    first_rest: None,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {
@@ -2134,6 +2298,7 @@ mod tests {
                     // The final pair: stable commits, unstable fails.
                     stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
                     give_up_us: 0,
+                    first_rest: None,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {

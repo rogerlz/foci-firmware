@@ -131,14 +131,22 @@ pub(crate) enum EncoderAlignState {
     Setup {
         count_before: EncoderCount,
     },
+    /// Two-sided alignment: hold the field off zero so the rotor reaches zero
+    /// from that side. `first_rest` is the rest position of the first side.
+    Approach {
+        deadline_us: u64,
+        first_rest: Option<EncoderCount>,
+    },
     Settle {
         count_before: EncoderCount,
         deadline_us: u64,
         min_movement: u32,
+        first_rest: Option<EncoderCount>,
     },
     StabilityCheck1 {
         count_before: EncoderCount,
         min_movement: u32,
+        first_rest: Option<EncoderCount>,
     },
     StabilityCheck2 {
         count_before: EncoderCount,
@@ -149,9 +157,13 @@ pub(crate) enum EncoderAlignState {
         stable_pairs: u8,
         /// Fail if the rotor has not held still by this time.
         give_up_us: u64,
+        first_rest: Option<EncoderCount>,
     },
     Commit {
         old_count: EncoderCount,
+        /// `ABN_DECODER_COUNT` written at the rest position: 0, or the offset
+        /// that puts the midpoint of a two-sided alignment at 0.
+        commit_count: u32,
         electrical_residual_counts: u16,
         stability_counts: u16,
         movement_counts: u16,
