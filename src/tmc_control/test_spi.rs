@@ -267,6 +267,7 @@ pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     resistance_settle_ms: 500,
     resistance_samples_per_window: 8,
     resistance_sample_interval_ms: 5,
+    inductance_voltage: 768,
     resistance_scale_metadata_validated: false,
     current_scale_ma_per_lsb: 1.155,
     max_run_current_ma: 10_000,

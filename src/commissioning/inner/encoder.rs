@@ -898,7 +898,11 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     let voltage = backend.excitation_voltage() as u32;
                     *phase = InnerPhase::ElectricalIdentification {
                         state: ElectricalIdentificationState::ResistanceStart,
-                        data: ElectricalIdentificationData::new(voltage, backend.current_limit()),
+                        data: ElectricalIdentificationData::new(voltage, backend.current_limit())
+                            .with_motor(
+                                backend.tmc_config().inductance_voltage,
+                                backend.motor_pole_pairs(),
+                            ),
                     };
                     StepResult::PhaseChanged(CommissionPhase::ElectricalIdentification)
                 }

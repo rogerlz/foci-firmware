@@ -58,6 +58,10 @@ pub struct TmcConfig {
     /// window noise inside the drift limit.
     pub resistance_samples_per_window: u8,
     pub resistance_sample_interval_ms: u16,
+    /// Rotating-field drive of the inductance capture, in `UQ_UD_EXT` units.
+    /// High-inductance windings need more than a stepper's 768 to reach a
+    /// measurable quadrature current at 1 kHz.
+    pub inductance_voltage: u16,
     /// Whether the scale metadata is hardware-validated for physical display.
     pub resistance_scale_metadata_validated: bool,
     /// Milliamps per LSB of `PID_TORQUE_FLUX_LIMITS`.
@@ -204,6 +208,7 @@ impl TmcConfig {
             resistance_settle_ms: 500,
             resistance_samples_per_window: 8,
             resistance_sample_interval_ms: 5,
+            inductance_voltage: 768,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -249,6 +254,7 @@ mod tests {
             resistance_settle_ms: 500,
             resistance_samples_per_window: 8,
             resistance_sample_interval_ms: 5,
+            inductance_voltage: 768,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -346,6 +352,7 @@ mod tests {
             resistance_settle_ms: 500,
             resistance_samples_per_window: 8,
             resistance_sample_interval_ms: 5,
+            inductance_voltage: 768,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -377,6 +384,7 @@ mod tests {
             resistance_settle_ms: 500,
             resistance_samples_per_window: 8,
             resistance_sample_interval_ms: 5,
+            inductance_voltage: 768,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -408,6 +416,7 @@ mod tests {
             resistance_settle_ms: 500,
             resistance_samples_per_window: 8,
             resistance_sample_interval_ms: 5,
+            inductance_voltage: 768,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,

@@ -181,6 +181,11 @@ pub(crate) struct ElectricalIdentificationData {
     pub(crate) timing_states: u8,
     pub(crate) timing_overflow_mask: u8,
     pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
+    /// `UQ_UD_EXT` drive of the inductance capture.
+    pub(crate) inductance_ud: i16,
+    /// Open-loop target giving a 1 kHz electrical rotation for the motor's
+    /// pole pairs.
+    pub(crate) inductance_openloop_rpm: u32,
 }
 
 impl ElectricalIdentificationData {
@@ -198,7 +203,19 @@ impl ElectricalIdentificationData {
             timing_states: 0,
             timing_overflow_mask: 0,
             encoder_domain: None,
+            inductance_ud: electrical_identification::INDUCTANCE_AC_UD_EXT,
+            inductance_openloop_rpm:
+                electrical_identification::INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
         }
+    }
+
+    /// Size the inductance capture for the motor: drive `inductance_voltage`
+    /// and rotate at 1 kHz electrical for `pole_pairs`.
+    pub(crate) fn with_motor(mut self, inductance_voltage: u16, pole_pairs: u16) -> Self {
+        self.inductance_ud = i16::try_from(inductance_voltage).unwrap_or(i16::MAX);
+        self.inductance_openloop_rpm =
+            electrical_identification::inductance_openloop_rpm(pole_pairs);
+        self
     }
 }
 

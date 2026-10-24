@@ -29,10 +29,12 @@ use foci_tmc4671::registers::Register;
 
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 
-const INDUCTANCE_AC_UD_EXT: i16 = 768;
-const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
+pub(super) const INDUCTANCE_AC_UD_EXT: i16 = 768;
+/// 1 kHz electrical on a 50-pole-pair stepper; see [`inductance_openloop_rpm`].
+pub(super) const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
 const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
 const INDUCTANCE_OPENLOOP_RAMP_POLL_US: u64 = 200;
+/// Floor of the open-loop ramp timeout; see [`inductance_openloop_ramp_timeout_us`].
 const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
 const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
 const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 200;
@@ -51,6 +53,19 @@ const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
 const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
+
+/// Open-loop `OPENLOOP_VELOCITY_TARGET` (mechanical rpm) that rotates the
+/// field at the 1 kHz electrical frequency the capture is validated against.
+pub(super) fn inductance_openloop_rpm(pole_pairs: u16) -> u32 {
+    (INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ * 60 / 1_000) / u32::from(pole_pairs.max(1))
+}
+
+/// Time allowed for the open-loop ramp to reach `target_rpm`: 1.5x the
+/// nominal ramp at `INDUCTANCE_OPENLOOP_ACCELERATION`, never below 2 ms.
+fn inductance_openloop_ramp_timeout_us(target_rpm: u32) -> u64 {
+    (u64::from(target_rpm) * 1_500_000 / u64::from(INDUCTANCE_OPENLOOP_ACCELERATION))
+        .max(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US)
+}
 
 fn inductance_max_encoder_delta_counts(
     encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
@@ -225,8 +240,8 @@ fn record_electrical_id_measurement_diagnostics(
     diagnostics.push(electrical_id_measurement_diagnostic(
         DIAG_ELECTRICAL_ID_EXCITATION,
         data.voltage,
-        INDUCTANCE_AC_UD_EXT as u32,
-        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+        u32::from(data.inductance_ud.unsigned_abs()),
+        data.inductance_openloop_rpm,
     ));
     for coil_idx in 0..2 {
         if let Some((avg_current, r_count_milli, count)) = per_coil_resistance_slope(data, coil_idx)
@@ -283,7 +298,7 @@ fn phase_delay_from_evidence(
         iq_rms_milli_count: inductance.frame.iq_rms_milli_count,
         sample_count: inductance.run.sample_count,
         r_count_milli,
-        ud_count: INDUCTANCE_AC_UD_EXT.unsigned_abs(),
+        ud_count: data.inductance_ud.unsigned_abs(),
         realized_frequency_millihz: inductance.run.realized_frequency_millihz,
     })
 }
@@ -1062,7 +1077,7 @@ fn finish_inductance_evidence(
         selected_resistance_count_slope(data).ok_or(InductanceReject::MissingResistance)?;
     let reactance = crate::electrical_capture::rotating_frame_reactance(
         frame,
-        INDUCTANCE_AC_UD_EXT,
+        data.inductance_ud,
         r_count_slope_milli,
     )
     .ok_or(InductanceReject::Reactance)?;
@@ -1076,13 +1091,13 @@ fn finish_inductance_evidence(
         .ok_or(InductanceReject::Drift)?;
     let first_reactance = crate::electrical_capture::rotating_frame_reactance(
         first_frame,
-        INDUCTANCE_AC_UD_EXT,
+        data.inductance_ud,
         r_count_slope_milli,
     )
     .ok_or(InductanceReject::Drift)?;
     let second_reactance = crate::electrical_capture::rotating_frame_reactance(
         second_frame,
-        INDUCTANCE_AC_UD_EXT,
+        data.inductance_ud,
         r_count_slope_milli,
     )
     .ok_or(InductanceReject::Drift)?;
@@ -1112,7 +1127,7 @@ fn finish_inductance_evidence(
             phi_delta_counts,
             frame,
             x_average_count_ratio_milli: reactance.x_quad_count_ratio_milli,
-            ud_count: INDUCTANCE_AC_UD_EXT,
+            ud_count: data.inductance_ud,
         })
         .and_then(crate::electrical_capture::extract_saliency_from_second_harmonic)
     {
@@ -1153,7 +1168,7 @@ fn finish_inductance_evidence(
             source: INDUCTANCE_SOURCE_ROTATING_FIELD,
             status: 0,
             warning_flags,
-            ud_count: INDUCTANCE_AC_UD_EXT,
+            ud_count: data.inductance_ud,
             realized_frequency_millihz: realized_frequency,
             elapsed_us,
             openloop_phi_delta_counts: phi_delta_counts,
@@ -1425,7 +1440,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         }
 
         ElectricalIdentificationState::InductanceSetupOperation { operation } => {
-            let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
+            let pidout_limit = data
+                .voltage
+                .min(u32::from(data.inductance_ud.unsigned_abs()));
             let result: Result<(), CommissionError> = match *operation {
                 0 => backend
                     .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
@@ -1448,10 +1465,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     .await
                     .map_err(|_| CommissionError::Spi),
                 5 => backend
-                    .write_register(
-                        OPENLOOP_VELOCITY_TARGET,
-                        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
-                    )
+                    .write_register(OPENLOOP_VELOCITY_TARGET, data.inductance_openloop_rpm)
                     .await
                     .map_err(|_| CommissionError::Spi),
                 6 => backend
@@ -1482,9 +1496,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 *operation += 1;
                 return StepResult::ReadyNow;
             }
-            let Some(deadline_us) = backend
-                .elapsed_us()
-                .checked_add(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US)
+            let Some(deadline_us) =
+                backend
+                    .elapsed_us()
+                    .checked_add(inductance_openloop_ramp_timeout_us(
+                        data.inductance_openloop_rpm,
+                    ))
             else {
                 return begin_inductance_restore(
                     electrical_identification_state,
@@ -1522,7 +1539,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            if velocity != INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM {
+            if velocity != data.inductance_openloop_rpm {
                 let now_us = backend.elapsed_us();
                 if now_us < *deadline_us {
                     return StepResult::At(
@@ -1564,7 +1581,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdentificationState::InductanceApplyDrive { encoder_start } => {
             if backend
-                .write_register(UQ_UD_EXT, pack_ud_drive(INDUCTANCE_AC_UD_EXT))
+                .write_register(UQ_UD_EXT, pack_ud_drive(data.inductance_ud))
                 .await
                 .is_err()
             {
@@ -2021,6 +2038,24 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inductance_openloop_targets_one_kilohertz_electrical() {
+        assert_eq!(
+            inductance_openloop_rpm(50),
+            INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM
+        );
+        assert_eq!(inductance_openloop_rpm(3), 20_000);
+    }
+
+    #[test]
+    fn inductance_openloop_ramp_timeout_scales_with_the_target() {
+        assert_eq!(
+            inductance_openloop_ramp_timeout_us(INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM),
+            INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US
+        );
+        assert_eq!(inductance_openloop_ramp_timeout_us(20_000), 28_610);
+    }
+
     use super::*;
     use crate::autotune::Permille;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
