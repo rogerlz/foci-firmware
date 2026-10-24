@@ -212,6 +212,10 @@ pub struct ResistanceRunner {
     status_flags_or: u32,
     warning_flags: ResistanceWarningFlags,
     axis_index: u8,
+    /// Excite in the rotor frame (`phi_e_abn`) instead of at a fixed
+    /// angle. A free PMSM rotor turns toward a fixed excitation, and its
+    /// back-EMF corrupts the measurement; along the d axis it holds still.
+    rotor_frame: bool,
     axis: AxisProgress,
     axis_results: [Option<ResistanceAxisResult>; 2],
     result: Option<ResistanceRunResult>,
@@ -249,6 +253,7 @@ impl ResistanceRunner {
             status_flags_or: 0,
             warning_flags: ResistanceWarningFlags::NONE,
             axis_index: 0,
+            rotor_frame: false,
             axis: AxisProgress::new(),
             axis_results: [None, None],
             result: None,

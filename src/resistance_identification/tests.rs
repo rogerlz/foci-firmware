@@ -1,8 +1,8 @@
 use core::cell::Cell;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, ADC_RAW_ADDR, ADC_RAW_DATA, DSADC_MDEC_B_MDEC_A,
-    MODE_RAMP_MODE_MOTION, MotionMode, MotorType, MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS,
-    PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+    MODE_RAMP_MODE_MOTION, MotionMode, MotorType, MotorTypeNPolePairs, PHI_E_SELECTION,
+    PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
 };
 use pollster::block_on;
 
@@ -451,6 +451,27 @@ fn runner_writes_voltage_limit_before_chopper() {
         PIDOUT_UQ_UD_LIMITS.addr(),
         PWM_SV_CHOP.addr(),
     );
+}
+
+#[test]
+fn three_phase_motor_is_excited_in_the_rotor_frame() {
+    let phi_e_selections = |motor_type| {
+        let mut backend = FakeResistanceBackend::standard();
+        backend.motor_type = motor_type;
+        let _ = block_on(run_resistance_identification(
+            &mut backend,
+            ResistanceRunMode::CommissioningManagedEnable,
+        ));
+        backend
+            .writes
+            .iter()
+            .filter(|write| write.addr == PHI_E_SELECTION.addr())
+            .map(|write| write.value)
+            .next()
+    };
+
+    assert_eq!(phi_e_selections(MotorType::TwoPhase), Some(1));
+    assert_eq!(phi_e_selections(MotorType::ThreePhase), Some(3));
 }
 
 #[test]

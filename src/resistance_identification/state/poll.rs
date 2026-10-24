@@ -20,6 +20,11 @@ use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunM
 use crate::resistance_identification::types::{ResistanceError, ResistanceWarningFlags};
 use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
 
+/// `PHI_E_SELECTION` values: the commanded angle in `PHI_E_EXT`, or the
+/// encoder's electrical angle.
+const PHI_E_SELECTION_EXT: u32 = 1;
+const PHI_E_SELECTION_ABN: u32 = 3;
+
 impl ResistanceRunner {
     pub(super) async fn read_saved_limit<B: ResistanceBackend>(
         &mut self,
@@ -59,6 +64,8 @@ impl ResistanceRunner {
                     Ok(MotorType::TwoPhase | MotorType::ThreePhase)
                 ) =>
             {
+                self.rotor_frame =
+                    MotorTypeNPolePairs::from(raw).motor_type() == Ok(MotorType::ThreePhase);
                 self.state = ResistanceState::ReadBusVoltage(0);
                 ResistancePoll::ReadyNow
             }
@@ -261,7 +268,12 @@ impl ResistanceRunner {
     ) -> ResistancePoll {
         let axis = self.profile.axes[self.axis_index as usize];
         let result = if operation == 0 {
-            write(backend, PHI_E_SELECTION.addr(), 1).await
+            let selection = if self.rotor_frame {
+                PHI_E_SELECTION_ABN
+            } else {
+                PHI_E_SELECTION_EXT
+            };
+            write(backend, PHI_E_SELECTION.addr(), selection).await
         } else {
             write(backend, PHI_E_EXT.addr(), u32::from(axis.phi_e_ext)).await
         };
@@ -386,7 +398,13 @@ impl ResistanceRunner {
                 return self.fail_window(backend, &capture, ResistanceError::BackendIo, false);
             }
         };
-        let axis = self.profile.axes[self.axis_index as usize];
+        // In the rotor frame the excitation stays on the d axis, which the
+        // alignment put on phase U, so both axes read the U current.
+        let axis = if self.rotor_frame {
+            self.profile.axes[0]
+        } else {
+            self.profile.axes[self.axis_index as usize]
+        };
         let current = phase_current_for_axis(axis, packed);
         if capture.plan.ud != 0 {
             self.current.observe_energized_sample(current);
