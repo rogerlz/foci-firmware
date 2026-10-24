@@ -38,7 +38,10 @@ const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
 const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 200;
 const INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS: u32 = 20 * 65_536;
 const INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT: i32 = 30_000;
+/// Rotor motion allowed during the capture: 8 counts of a 1000-line
+/// (4000-count) encoder, as a fraction of a revolution.
 const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
+const INDUCTANCE_MAX_ENCODER_DELTA_REV_DIVISOR: u32 = 500;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
 const INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE: u16 = 250;
 const INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE: u16 = 100;
@@ -48,6 +51,13 @@ const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
 const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
+
+fn inductance_max_encoder_delta_counts(
+    encoder_domain: crate::commissioning::encoder_domain::EncoderDomain,
+) -> u32 {
+    (encoder_domain.counts_per_rev() / INDUCTANCE_MAX_ENCODER_DELTA_REV_DIVISOR)
+        .max(INDUCTANCE_MAX_ENCODER_DELTA_COUNTS)
+}
 
 const INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION: Permille = Permille::new(200);
 
@@ -1133,7 +1143,7 @@ fn finish_inductance_evidence(
     }
 
     let encoder_delta = inductance_encoder_delta(encoder_domain, encoder_start, encoder_after)?;
-    if encoder_delta.absolute_counts() > INDUCTANCE_MAX_ENCODER_DELTA_COUNTS {
+    if encoder_delta.absolute_counts() > inductance_max_encoder_delta_counts(encoder_domain) {
         return Err(InductanceReject::EncoderMotion);
     }
     let encoder_delta_counts = encoder_delta.signed_counts();

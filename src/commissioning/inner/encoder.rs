@@ -21,8 +21,6 @@ const ENCODER_ALIGNMENT_SETTLE_US: u64 = 500_000;
 
 const ENCODER_ALIGNMENT_STABILITY_US: u64 = 10_000;
 
-const ENCODER_ALIGNMENT_STABILITY_COUNTS: u32 = 2;
-
 const ENCODER_ALIGNMENT_VOLTAGE_LIMIT: u32 = 2000;
 
 const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
@@ -38,7 +36,11 @@ const ENCODER_MOVEMENT_CURRENT_SCALE: [(u32, u32, u32); ENCODER_DIRECTION_MAX_AT
 ];
 
 const ENCODER_READ_SAMPLES: usize = 3;
-const ENCODER_READ_MAX_JITTER: u32 = 2;
+/// Read jitter and alignment stability limits, as a fraction of a
+/// revolution: 2 counts of a 1000-line (4000-count) encoder, never below
+/// 2 counts.
+const ENCODER_STABILITY_REV_DIVISOR: u32 = 2000;
+const ENCODER_STABILITY_MIN_COUNTS: u32 = 2;
 const ENCODER_READ_ATTEMPTS: usize = 3;
 
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
@@ -95,6 +97,10 @@ fn encoder_movement_current_target(current_limit: u32, attempt: u8) -> i16 {
     let (numerator, denominator, ceiling) = ENCODER_MOVEMENT_CURRENT_SCALE[index];
     ((current_limit * numerator / denominator).clamp(ENCODER_MOVEMENT_CURRENT_MIN, ceiling))
         .min(current_limit) as i16
+}
+
+pub(crate) fn encoder_stability_counts(counts_per_rev: u32) -> u32 {
+    (counts_per_rev / ENCODER_STABILITY_REV_DIVISOR).max(ENCODER_STABILITY_MIN_COUNTS)
 }
 
 fn saturating_u16(value: u32) -> u16 {
@@ -223,7 +229,7 @@ async fn read_mechanical_encoder_position_counts_stable<B: CommissioningBackend>
                 }
             }
         }
-        if !ambiguous && spread <= ENCODER_READ_MAX_JITTER {
+        if !ambiguous && spread <= encoder_stability_counts(domain.counts_per_rev()) {
             return Ok(counts[ENCODER_READ_SAMPLES - 1]);
         }
     }
@@ -739,7 +745,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 }
             };
             let movement = movement1.max(movement2);
-            let stable = stability <= ENCODER_ALIGNMENT_STABILITY_COUNTS;
+            let stable = stability <= encoder_stability_counts(domain.counts_per_rev());
             if movement < *min_movement || !stable {
                 push_encoder_align_result(diagnostics, movement, *min_movement, stability, true);
                 defmt::warn!(
@@ -1041,6 +1047,17 @@ mod tests {
     #[test]
     fn encoder_alignment_min_movement_uses_encoder_count_scale() {
         assert_eq!(encoder_alignment_min_movement(4_000, 50), 4);
+    }
+
+    #[test]
+    fn encoder_stability_counts_keep_two_counts_on_a_1000_line_encoder() {
+        assert_eq!(encoder_stability_counts(4_000), 2);
+        assert_eq!(encoder_stability_counts(400), 2);
+    }
+
+    #[test]
+    fn encoder_stability_counts_scale_with_high_resolution_encoders() {
+        assert_eq!(encoder_stability_counts(262_144), 131);
     }
 
     #[test]
