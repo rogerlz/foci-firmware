@@ -100,12 +100,16 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
     match cal_state {
         AdcCalState::Setup => {
             backend.set_enable_pin(false);
+            // Commissioning drives the motor up to the board's excitation
+            // voltage, so high-resistance windings still reach a measurable
+            // current.
+            let voltage_limit = u32::from(backend.excitation_voltage());
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
                 .is_err()
                 || backend
-                    .write_register(PIDOUT_UQ_UD_LIMITS, 1024)
+                    .write_register(PIDOUT_UQ_UD_LIMITS, voltage_limit)
                     .await
                     .is_err()
             {
@@ -113,7 +117,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             }
 
             match backend.read_register(PIDOUT_UQ_UD_LIMITS).await {
-                Ok(1024) => {}
+                Ok(value) if value == voltage_limit => {}
                 _ => return super::fail_inner(phase, CommissionError::Spi),
             }
 
