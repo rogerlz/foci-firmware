@@ -45,6 +45,19 @@ pub struct TmcConfig {
     pub current_validation_torque_max_encoder_delta_counts: u16,
     /// Maximum expected resistance-profile current in TMC current counts.
     pub resistance_max_expected_current_count: u16,
+    /// Multiplier on the resistance-identification voltage ladder, for
+    /// windings that need N times a stepper's voltage for the same current.
+    /// The exposure budgets scale by N squared. 1 for steppers.
+    pub resistance_voltage_scale: u16,
+    /// Resistance-identification settle before each energized window; the
+    /// zero windows settle half as long. Steppers need 500 ms for the rotor
+    /// to come to rest; a shorter settle limits the winding's heating.
+    pub resistance_settle_ms: u16,
+    /// Resistance-identification current samples per window and their
+    /// spacing. A small resistance current needs more samples to keep the
+    /// window noise inside the drift limit.
+    pub resistance_samples_per_window: u8,
+    pub resistance_sample_interval_ms: u16,
     /// Whether the scale metadata is hardware-validated for physical display.
     pub resistance_scale_metadata_validated: bool,
     /// Milliamps per LSB of `PID_TORQUE_FLUX_LIMITS`.
@@ -120,6 +133,24 @@ impl TmcConfig {
         profile.dsadc_mdec_a = self.dsadc_mdec_a;
         profile.dsadc_mdec_b = self.dsadc_mdec_b;
         profile.max_expected_current_count = self.resistance_max_expected_current_count;
+        profile.settle_ms = self.resistance_settle_ms;
+        profile.zero_settle_ms = self.resistance_settle_ms / 2;
+        profile.samples_per_window = self.resistance_samples_per_window;
+        profile.sample_interval_ms = self.resistance_sample_interval_ms;
+        // The standard linear threshold sits at 15/32 of its 1600-count
+        // ceiling (750); keep that ratio when a board lowers the ceiling.
+        profile.linear_current_threshold_count =
+            (self.resistance_max_expected_current_count as u32 * 15 / 32) as u16;
+        let scale = self.resistance_voltage_scale as i16;
+        let mut index = 0;
+        while index < profile.ud_points.len() {
+            profile.ud_points[index] *= scale;
+            index += 1;
+        }
+        profile.signed_anchor_ud *= scale;
+        let exposure_scale = (self.resistance_voltage_scale as u64).pow(2);
+        profile.max_window_exposure *= exposure_scale;
+        profile.max_total_exposure *= exposure_scale;
         profile.scale_metadata_validated = scale_metadata_validated;
         profile
     }
@@ -169,6 +200,10 @@ impl TmcConfig {
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
+            resistance_voltage_scale: 1,
+            resistance_settle_ms: 500,
+            resistance_samples_per_window: 8,
+            resistance_sample_interval_ms: 5,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -210,6 +245,10 @@ mod tests {
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
+            resistance_voltage_scale: 1,
+            resistance_settle_ms: 500,
+            resistance_samples_per_window: 8,
+            resistance_sample_interval_ms: 5,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -303,6 +342,10 @@ mod tests {
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
+            resistance_voltage_scale: 1,
+            resistance_settle_ms: 500,
+            resistance_samples_per_window: 8,
+            resistance_sample_interval_ms: 5,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -330,6 +373,10 @@ mod tests {
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
+            resistance_voltage_scale: 1,
+            resistance_settle_ms: 500,
+            resistance_samples_per_window: 8,
+            resistance_sample_interval_ms: 5,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -357,6 +404,10 @@ mod tests {
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
+            resistance_voltage_scale: 1,
+            resistance_settle_ms: 500,
+            resistance_samples_per_window: 8,
+            resistance_sample_interval_ms: 5,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
@@ -393,5 +444,27 @@ mod tests {
         let config = FeedbackConfig::abn_abn();
         assert_eq!(config.phi_e_source, FeedbackSource::Abn);
         assert_eq!(config.position_source, FeedbackSource::Abn);
+    }
+
+    #[test]
+    fn resistance_profile_scales_the_ladder_and_keeps_the_threshold_ratio() {
+        let mut config = test_config();
+        config.resistance_voltage_scale = 5;
+        config.resistance_max_expected_current_count = 640;
+        let standard = crate::resistance_identification::ResistanceProfile::standard();
+        let profile = config.resistance_profile(true);
+        assert_eq!(profile.ud_points[0], standard.ud_points[0] * 5);
+        assert_eq!(profile.signed_anchor_ud, standard.signed_anchor_ud * 5);
+        assert_eq!(
+            profile.max_window_exposure,
+            standard.max_window_exposure * 25
+        );
+        assert_eq!(profile.linear_current_threshold_count, 300);
+        assert_eq!(
+            test_config()
+                .resistance_profile(true)
+                .linear_current_threshold_count,
+            750
+        );
     }
 }

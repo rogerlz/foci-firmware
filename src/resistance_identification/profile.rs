@@ -43,6 +43,8 @@ pub struct ResistanceProfile {
     pub settle_ms: u16,
     pub zero_settle_ms: u16,
     pub sample_interval_ms: u16,
+    /// Current samples averaged per window.
+    pub samples_per_window: u8,
     pub pwm_maxcnt: u16,
     pub bbm_h: u8,
     pub bbm_l: u8,
@@ -74,6 +76,7 @@ impl ResistanceProfile {
             settle_ms: 500,
             zero_settle_ms: 250,
             sample_interval_ms: 5,
+            samples_per_window: 8,
             pwm_maxcnt: 3999,
             bbm_h: 9,
             bbm_l: 9,

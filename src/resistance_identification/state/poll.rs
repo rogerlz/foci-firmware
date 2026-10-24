@@ -6,10 +6,10 @@ use foci_tmc4671::registers::{
 };
 
 use super::{
-    MAX_OPPORTUNITIES_PER_WINDOW, PHASE_DEADLINE_US, ResistancePoll, ResistanceRunner,
-    ResistanceState, SAMPLES_PER_WINDOW, WindowCapture, WindowPlan, WindowPurpose,
-    acquisition_opportunities_through, exposure_is_supported, nominal_duration_us, pack_ud,
-    phase_current_for_axis, wrapped_encoder_delta, write,
+    PHASE_DEADLINE_US, ResistancePoll, ResistanceRunner, ResistanceState, WindowCapture,
+    WindowPlan, WindowPurpose, acquisition_opportunities_through, exposure_is_supported,
+    max_opportunities_per_window, nominal_duration_us, pack_ud, phase_current_for_axis,
+    wrapped_encoder_delta, write,
 };
 use crate::autotune::current_loop_actionable_status_mask;
 use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
@@ -475,7 +475,7 @@ impl ResistanceRunner {
                 capture.timing.snapshot().1,
             );
         }
-        if capture.acquisition_opportunities > MAX_OPPORTUNITIES_PER_WINDOW
+        if capture.acquisition_opportunities > max_opportunities_per_window(&self.profile)
             || capture.timing.finish().is_err()
         {
             return self.fail_window(
@@ -485,7 +485,7 @@ impl ResistanceRunner {
                 capture.timing.snapshot().1,
             );
         }
-        if capture.acquisition_samples == SAMPLES_PER_WINDOW {
+        if capture.acquisition_samples == self.profile.samples_per_window {
             let evidence = match capture.timing.finish() {
                 Ok(evidence) => evidence,
                 Err(_) => {
@@ -553,7 +553,7 @@ impl ResistanceRunner {
             self.warning_flags
                 .insert(ResistanceWarningFlags::ENCODER_MOVED);
         }
-        let mean = capture.current_sum / i32::from(SAMPLES_PER_WINDOW);
+        let mean = capture.current_sum / i32::from(self.profile.samples_per_window);
         self.finish_window(backend, capture.plan, mean)
     }
 }

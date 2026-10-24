@@ -12,8 +12,14 @@ use super::types::{
 use crate::autotune::Permille;
 use crate::commissioning::capture_timing::CaptureTiming;
 
-const SAMPLES_PER_WINDOW: u8 = 8;
-const MAX_OPPORTUNITIES_PER_WINDOW: u8 = 9;
+/// Sampling opportunities a window may use beyond its sample count.
+const SPARE_OPPORTUNITIES_PER_WINDOW: u8 = 1;
+
+const fn max_opportunities_per_window(profile: &ResistanceProfile) -> u8 {
+    profile
+        .samples_per_window
+        .saturating_add(SPARE_OPPORTUNITIES_PER_WINDOW)
+}
 pub(super) const PHASE_DEADLINE_US: u64 = 20_000_000;
 const PREDICTED_CURRENT_STOP_PERMILLE: u64 = 950;
 
@@ -355,7 +361,7 @@ pub(super) fn nominal_duration_us(profile: &ResistanceProfile) -> Option<u64> {
         )?)?
         .checked_add(2 * (u64::from(profile.settle_ms) + u64::from(profile.zero_settle_ms)))?;
     let sample_ms = windows_per_axis
-        .checked_mul(u64::from(MAX_OPPORTUNITIES_PER_WINDOW))?
+        .checked_mul(u64::from(max_opportunities_per_window(profile)))?
         .checked_mul(u64::from(profile.sample_interval_ms))?;
     settle_ms
         .checked_add(sample_ms)?
