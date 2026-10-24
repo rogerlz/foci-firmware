@@ -75,10 +75,24 @@ pub(crate) enum AdcResidualStage {
 
 #[derive(Debug, defmt::Format)]
 pub(crate) enum CoilTestState {
-    Setup { phase: u8 },
-    Settle { phase: u8, deadline_us: u64 },
-    Read { phase: u8 },
-    Cooldown { phase: u8, deadline_us: u64 },
+    Setup {
+        phase: u8,
+    },
+    Settle {
+        phase: u8,
+        deadline_us: u64,
+        /// Encoder count at the previous stillness poll.
+        last_count: Option<u32>,
+        /// Read anyway once the rotor has not settled by this time.
+        give_up_us: u64,
+    },
+    Read {
+        phase: u8,
+    },
+    Cooldown {
+        phase: u8,
+        deadline_us: u64,
+    },
 }
 
 #[derive(Debug, defmt::Format)]
@@ -131,6 +145,10 @@ pub(crate) enum EncoderAlignState {
         count1: EncoderCount,
         deadline_us: u64,
         min_movement: u32,
+        /// Consecutive stable pairs seen so far.
+        stable_pairs: u8,
+        /// Fail if the rotor has not held still by this time.
+        give_up_us: u64,
     },
     Commit {
         old_count: EncoderCount,

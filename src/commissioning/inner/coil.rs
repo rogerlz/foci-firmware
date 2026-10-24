@@ -16,7 +16,33 @@ const COIL_DIAGNOSTIC_CURRENT_FRACTION: Permille = Permille::new(1000);
 
 const COIL_SETTLE_US: u64 = 100_000;
 
+/// A free rotor (no detent torque) swings while it aligns to the excitation
+/// and its back-EMF lowers the current, so after `COIL_SETTLE_US` keep
+/// polling the encoder until two readings this far apart agree.
+const COIL_STILL_POLL_US: u64 = 10_000;
+
+const COIL_SETTLE_MAX_US: u64 = 1_000_000;
+
 const COIL_COOLDOWN_US: u64 = 50_000;
+
+/// Whether the encoder held still since the previous poll. Without a
+/// configured encoder domain there is nothing to wait on.
+fn rotor_still<B: CommissioningBackend>(backend: &B, last_count: Option<u32>, count: u32) -> bool {
+    let Ok(domain) = crate::commissioning::encoder_domain::EncoderDomain::new(
+        backend.mechanical_encoder_quadrature_counts_per_rev(),
+    ) else {
+        return true;
+    };
+    let Some(last_count) = last_count else {
+        return false;
+    };
+    domain
+        .delta(domain.count(last_count), domain.count(count))
+        .is_ok_and(|delta| {
+            delta.absolute_counts()
+                <= super::encoder::encoder_stability_counts(domain.counts_per_rev())
+        })
+}
 
 pub(crate) async fn step_coil_check<B: CommissioningBackend>(
     phase: &mut InnerPhase,
@@ -62,13 +88,18 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 }
                 backend.set_enable_pin(true);
 
-                let deadline = match backend.elapsed_us().checked_add(COIL_SETTLE_US) {
-                    Some(deadline) => deadline,
-                    None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+                let now = backend.elapsed_us();
+                let (Some(deadline), Some(give_up)) = (
+                    now.checked_add(COIL_SETTLE_US),
+                    now.checked_add(COIL_SETTLE_MAX_US),
+                ) else {
+                    return super::fail_inner(phase, CommissionError::InvalidSchedule);
                 };
                 *coil_test = CoilTestState::Settle {
                     phase: p,
                     deadline_us: deadline,
+                    last_count: None,
+                    give_up_us: give_up,
                 };
                 StepResult::At(deadline)
             }
@@ -76,8 +107,19 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
             CoilTestState::Settle {
                 phase: coil_phase,
                 deadline_us,
+                last_count,
+                give_up_us,
             } => {
-                if backend.elapsed_us() < *deadline_us {
+                let now = backend.elapsed_us();
+                if now < *deadline_us {
+                    return StepResult::At(*deadline_us);
+                }
+                let Ok(count) = backend.read_register(ABN_DECODER_COUNT).await else {
+                    return super::fail_inner(phase, CommissionError::Spi);
+                };
+                if now < *give_up_us && !rotor_still(backend, *last_count, count) {
+                    *last_count = Some(count);
+                    *deadline_us = now.saturating_add(COIL_STILL_POLL_US);
                     return StepResult::At(*deadline_us);
                 }
                 *coil_test = CoilTestState::Read { phase: *coil_phase };
@@ -257,6 +299,17 @@ mod tests {
             assert!(matches!(early, StepResult::At(101_000)));
 
             backend.elapsed_us_value = 101_000;
+            let first_poll = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(first_poll, StepResult::At(111_000)));
+
+            backend.elapsed_us_value = 111_000;
             let due = step_coil_check(
                 &mut phase,
                 InnerSequence::Commission,
@@ -273,6 +326,83 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    #[test]
+    fn coil_settle_waits_for_a_swinging_rotor_to_stop() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CoilCheck {
+                state: CoilCheckState::CoilA(CoilTestState::Settle {
+                    phase: 0,
+                    deadline_us: 101_000,
+                    last_count: None,
+                    give_up_us: 1_001_000,
+                }),
+                coil_a: None,
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[100, 140, 141]);
+
+            let mut now = 101_000;
+            for expected in [111_000, 121_000] {
+                backend.elapsed_us_value = now;
+                let result = step_coil_check(
+                    &mut phase,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(result, StepResult::At(at) if at == expected));
+                now += 10_000;
+            }
+
+            backend.elapsed_us_value = now;
+            let still = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(still, StepResult::ReadyNow));
+        });
+    }
+
+    #[test]
+    fn coil_settle_reads_anyway_after_the_give_up_time() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CoilCheck {
+                state: CoilCheckState::CoilA(CoilTestState::Settle {
+                    phase: 0,
+                    deadline_us: 1_001_000,
+                    last_count: Some(0),
+                    give_up_us: 1_001_000,
+                }),
+                coil_a: None,
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[500]);
+            backend.elapsed_us_value = 1_001_000;
+
+            let result = step_coil_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(result, StepResult::ReadyNow));
         });
     }
 

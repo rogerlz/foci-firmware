@@ -21,6 +21,15 @@ const ENCODER_ALIGNMENT_SETTLE_US: u64 = 500_000;
 
 const ENCODER_ALIGNMENT_STABILITY_US: u64 = 10_000;
 
+/// Consecutive stable pairs, one `ENCODER_ALIGNMENT_STABILITY_US` apart,
+/// before committing. A rotor without detent torque swings around the
+/// aligned position under current control (the current loop cancels the
+/// back-EMF that would damp it), and a single pair can land on a turning
+/// point of that swing.
+const ENCODER_ALIGNMENT_STABLE_PAIRS: u8 = 10;
+
+const ENCODER_ALIGNMENT_STILL_TIMEOUT_US: u64 = 2_000_000;
+
 const ENCODER_ALIGNMENT_VOLTAGE_LIMIT: u32 = 2000;
 
 const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
@@ -682,18 +691,20 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     return super::fail_inner(phase, error);
                 }
             };
-            let deadline = match backend
-                .elapsed_us()
-                .checked_add(ENCODER_ALIGNMENT_STABILITY_US)
-            {
-                Some(deadline) => deadline,
-                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            let now = backend.elapsed_us();
+            let (Some(deadline), Some(give_up)) = (
+                now.checked_add(ENCODER_ALIGNMENT_STABILITY_US),
+                now.checked_add(ENCODER_ALIGNMENT_STILL_TIMEOUT_US),
+            ) else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
             *state = EncoderAlignState::StabilityCheck2 {
                 count_before: *count_before,
                 count1,
                 deadline_us: deadline,
                 min_movement: *min_movement,
+                stable_pairs: 0,
+                give_up_us: give_up,
             };
             StepResult::At(deadline)
         }
@@ -703,6 +714,8 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             count1,
             deadline_us,
             min_movement,
+            stable_pairs,
+            give_up_us,
         } => {
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
@@ -746,6 +759,19 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             };
             let movement = movement1.max(movement2);
             let stable = stability <= encoder_stability_counts(domain.counts_per_rev());
+            let now = backend.elapsed_us();
+            let keep_watching = if stable {
+                *stable_pairs = stable_pairs.saturating_add(1);
+                *stable_pairs < ENCODER_ALIGNMENT_STABLE_PAIRS
+            } else {
+                *stable_pairs = 0;
+                now < *give_up_us
+            };
+            if movement >= *min_movement && keep_watching {
+                *count1 = count2;
+                *deadline_us = now.saturating_add(ENCODER_ALIGNMENT_STABILITY_US);
+                return StepResult::At(*deadline_us);
+            }
             if movement < *min_movement || !stable {
                 push_encoder_align_result(diagnostics, movement, *min_movement, stability, true);
                 defmt::warn!(
@@ -1884,6 +1910,9 @@ mod tests {
                     count1: encoder_count(3999),
                     deadline_us: 0,
                     min_movement: 2,
+                    // The final pair: stable commits, unstable fails.
+                    stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
+                    give_up_us: 0,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {
@@ -2039,6 +2068,9 @@ mod tests {
                     count1: encoder_count(1001),
                     deadline_us: 0,
                     min_movement: 4,
+                    // The final pair: stable commits, unstable fails.
+                    stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
+                    give_up_us: 0,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {
@@ -2095,6 +2127,9 @@ mod tests {
                     count1: encoder_count(2000),
                     deadline_us: 0,
                     min_movement: 2,
+                    // The final pair: stable commits, unstable fails.
+                    stable_pairs: ENCODER_ALIGNMENT_STABLE_PAIRS - 1,
+                    give_up_us: 0,
                 },
             };
             let mut adc_cal = Some(AdcCalResult {
