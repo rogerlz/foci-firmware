@@ -270,6 +270,7 @@ pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     vm_divider_low_ohms: 1_500,
     vm_adc_reference_millivolts: 2_500,
     vm_adc_center_counts: 32_767,
+    motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
 };
 pub(crate) static TEST_FEEDBACK_CONFIGS: [FeedbackConfig; 8] = {
     let mut configs = [FeedbackConfig::abn_abn(); 8];

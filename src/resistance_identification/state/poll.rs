@@ -53,7 +53,12 @@ impl ResistanceRunner {
         backend: &mut B,
     ) -> ResistancePoll {
         match backend.read_register(MOTOR_TYPE_N_POLE_PAIRS.addr()).await {
-            Ok(raw) if MotorTypeNPolePairs::from(raw).motor_type() == Ok(MotorType::TwoPhase) => {
+            Ok(raw)
+                if matches!(
+                    MotorTypeNPolePairs::from(raw).motor_type(),
+                    Ok(MotorType::TwoPhase | MotorType::ThreePhase)
+                ) =>
+            {
                 self.state = ResistanceState::ReadBusVoltage(0);
                 ResistancePoll::ReadyNow
             }

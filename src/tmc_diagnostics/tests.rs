@@ -196,6 +196,7 @@ static TEST_TMC_CONFIG: crate::config::TmcConfig = crate::config::TmcConfig {
     vm_divider_low_ohms: 1_500,
     vm_adc_reference_millivolts: 2_500,
     vm_adc_center_counts: 32_767,
+    motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
 };
 
 fn ready_runtime() -> TmcControlRuntime {

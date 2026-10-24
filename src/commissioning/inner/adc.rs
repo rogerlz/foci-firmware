@@ -10,8 +10,7 @@ use crate::commissioning::types::{
     CommissioningBackend, StepResult,
 };
 use crate::tmc_register_values::{
-    MOTION_STOPPED, PWM_CHOP_CENTERED_FOC, PWM_CHOP_OFF, STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
-    adc_i0_scale_offset, adc_i1_scale_offset,
+    MOTION_STOPPED, PWM_CHOP_CENTERED_FOC, PWM_CHOP_OFF, adc_i0_scale_offset, adc_i1_scale_offset,
 };
 
 const ADC_CALIBRATION_SAMPLES: u16 = 128;
@@ -174,14 +173,15 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
+            let motor_type_n_pole_pairs = backend.tmc_config().motor_type_n_pole_pairs;
             if backend
-                .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, STEPPER_MOTOR_TYPE_N_POLE_PAIRS)
+                .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, motor_type_n_pole_pairs)
                 .await
                 .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            backend.store_motor_sentinel(STEPPER_MOTOR_TYPE_N_POLE_PAIRS);
+            backend.store_motor_sentinel(motor_type_n_pole_pairs);
 
             if backend
                 .write_register_verified(ADC_I0_SCALE_OFFSET, adc_i0_scale_offset(0))

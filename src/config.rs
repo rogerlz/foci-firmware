@@ -59,6 +59,10 @@ pub struct TmcConfig {
     pub vm_adc_reference_millivolts: u32,
     /// Centered positive `ADC_VM` count span of the 16-bit raw ADC.
     pub vm_adc_center_counts: u32,
+    /// `MOTOR_TYPE_N_POLE_PAIRS` written at commissioning and kept as the
+    /// arm sentinel. Steppers use
+    /// [`STEPPER_MOTOR_TYPE_N_POLE_PAIRS`](crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS).
+    pub motor_type_n_pole_pairs: u32,
 }
 
 /// Which physical encoder drives a TMC4671 selection register.
@@ -172,6 +176,7 @@ impl TmcConfig {
             vm_divider_low_ohms: 1_500,
             vm_adc_reference_millivolts: 2_500,
             vm_adc_center_counts: 32_767,
+            motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
         }
     }
 }
@@ -212,6 +217,7 @@ mod tests {
             vm_divider_low_ohms: 1_500,
             vm_adc_reference_millivolts: 2_500,
             vm_adc_center_counts: 32_767,
+            motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
         }
     }
 
@@ -304,6 +310,7 @@ mod tests {
             vm_divider_low_ohms: 1_500,
             vm_adc_reference_millivolts: 2_500,
             vm_adc_center_counts: 32_767,
+            motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
         };
         assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 660);
     }
@@ -330,6 +337,7 @@ mod tests {
             vm_divider_low_ohms: 1_500,
             vm_adc_reference_millivolts: 2_500,
             vm_adc_center_counts: 32_767,
+            motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
         };
         assert_eq!(cfg.pwm_freq_hz(), 100_000);
     }
@@ -356,6 +364,7 @@ mod tests {
             vm_divider_low_ohms: 1_500,
             vm_adc_reference_millivolts: 2_500,
             vm_adc_center_counts: 32_767,
+            motor_type_n_pole_pairs: crate::tmc_register_values::STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
         };
         assert_eq!(cfg.pwm_freq_hz(), 50_000);
     }

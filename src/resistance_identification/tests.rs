@@ -1114,7 +1114,7 @@ fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
 #[test]
 fn externally_armed_mode_rejects_wrong_motor_type_without_restore() {
     let mut backend = FakeResistanceBackend::standard();
-    backend.motor_type = foci_tmc4671::registers::MotorType::ThreePhase;
+    backend.motor_type = foci_tmc4671::registers::MotorType::Dc;
 
     let err = block_on(run_resistance_identification(
         &mut backend,

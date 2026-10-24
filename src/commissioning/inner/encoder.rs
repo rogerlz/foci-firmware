@@ -37,8 +37,6 @@ const ENCODER_MOVEMENT_CURRENT_SCALE: [(u32, u32, u32); ENCODER_DIRECTION_MAX_AT
     (1, 1, u32::MAX),
 ];
 
-const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
-
 const ENCODER_READ_SAMPLES: usize = 3;
 const ENCODER_READ_MAX_JITTER: u32 = 2;
 const ENCODER_READ_ATTEMPTS: usize = 3;
@@ -86,8 +84,8 @@ fn encoder_direction_window(
     })
 }
 
-fn encoder_alignment_min_movement(encoder_counts_per_rev: u32) -> u32 {
-    let denominator = 20_u64 * u64::from(ENCODER_ALIGNMENT_POLE_PAIRS);
+fn encoder_alignment_min_movement(encoder_counts_per_rev: u32, pole_pairs: u16) -> u32 {
+    let denominator = 20_u64 * u64::from(pole_pairs.max(1));
     let numerator = u64::from(encoder_counts_per_rev);
     ((numerator + denominator / 2) / denominator).max(2) as u32
 }
@@ -103,8 +101,8 @@ fn saturating_u16(value: u32) -> u16 {
     value.min(u32::from(u16::MAX)) as u16
 }
 
-fn counts_per_electrical_rev(counts_per_rev: u32) -> u16 {
-    saturating_u16((counts_per_rev / ENCODER_ALIGNMENT_POLE_PAIRS).max(1))
+fn counts_per_electrical_rev(counts_per_rev: u32, pole_pairs: u16) -> u16 {
+    saturating_u16((counts_per_rev / u32::from(pole_pairs.max(1))).max(1))
 }
 
 fn folded_electrical_residual_counts(count: u32, counts_per_electrical_rev: u16) -> u16 {
@@ -629,6 +627,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             let min_movement = encoder_alignment_min_movement(
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
+                backend.motor_pole_pairs(),
             );
             let deadline = match backend
                 .elapsed_us()
@@ -757,8 +756,10 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
 
-            let counts_per_elec =
-                counts_per_electrical_rev(backend.mechanical_encoder_quadrature_counts_per_rev());
+            let counts_per_elec = counts_per_electrical_rev(
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
+                backend.motor_pole_pairs(),
+            );
             *state = EncoderAlignState::Commit {
                 old_count: *count1,
                 electrical_residual_counts: folded_electrical_residual_counts(
@@ -1039,7 +1040,7 @@ mod tests {
 
     #[test]
     fn encoder_alignment_min_movement_uses_encoder_count_scale() {
-        assert_eq!(encoder_alignment_min_movement(4_000), 4);
+        assert_eq!(encoder_alignment_min_movement(4_000, 50), 4);
     }
 
     #[test]
@@ -1884,6 +1885,9 @@ mod tests {
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend
+                .last_motor_sentinel_stored
+                .set(Some(pole_pairs_sentinel(50)));
             backend.set_abn_decoder_count_sequence(&[0, 0, 0]);
 
             let result = step_encoder_align(

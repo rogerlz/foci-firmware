@@ -16,7 +16,6 @@ use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 use crate::tmc_register_values::{
     MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED, PWM_CHOP_CENTERED_FOC,
-    STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -85,7 +84,10 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
         (PIDOUT_UQ_UD_LIMITS, backend.operational_voltage_limit()),
         (PWM_SV_CHOP, PWM_CHOP_CENTERED_FOC),
         (MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI),
-        (MOTOR_TYPE_N_POLE_PAIRS, STEPPER_MOTOR_TYPE_N_POLE_PAIRS),
+        (
+            MOTOR_TYPE_N_POLE_PAIRS,
+            backend.tmc_config().motor_type_n_pole_pairs,
+        ),
         (PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION),
         (POSITION_SELECTION, CLOSED_LOOP_POSITION_SELECTION),
         (VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION),
